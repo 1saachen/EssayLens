@@ -376,10 +376,10 @@ print(f"Test: {test_df['score'].value_counts().sort_index()}")
 print(f"最终数据集大小 - Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(test_df)}")
 
 # 归一化目标 - 只在训练集上拟合
-scaler = MinMaxScaler()
-train_df['score_norm'] = scaler.fit_transform(train_df[['score']])
-val_df['score_norm'] = scaler.transform(val_df[['score']])
-test_df['score_norm'] = scaler.transform(test_df[['score']])
+target_scaler = MinMaxScaler()
+train_df['score_norm'] = target_scaler.fit_transform(train_df[['score']])
+val_df['score_norm'] = target_scaler.transform(val_df[['score']])
+test_df['score_norm'] = target_scaler.transform(test_df[['score']])
 
 # 重置所有数据集的索引以确保一致性
 train_df = train_df.reset_index(drop=True)
@@ -661,10 +661,10 @@ class FusionGraphBertAES(nn.Module):
         self.prompt_relevance = FixedPromptRelevanceModule(hidden_dim=bert_hidden, dropout=dropout)
         
         # 融合层
-        self.fusion_input_dim = bert_hidden + graph_out + num_features
+        self.fusion_input_dim = bert_hidden + graph_out // 2 + num_features
         print(f"🔧 Model initialization:")
         print(f"   - BERT hidden size: {bert_hidden}")
-        print(f"   - Graph output size: {graph_out}")
+        print(f"   - Graph output size: {graph_out // 2}")
         print(f"   - Feature size: {num_features}")
         print(f"   - Prompt relevance weight: {prompt_relevance_weight}")
         print(f"   - Total fusion input: {self.fusion_input_dim}")
@@ -712,7 +712,7 @@ class FusionGraphBertAES(nn.Module):
         
         # 检查维度是否匹配
         if x.shape[1] != self.fusion_input_dim:
-            self._adapt_fusion_layer(x.shape[1])
+            raise ValueError(f"Fusion dimension mismatch: expected {self.fusion_input_dim}, got {x.shape[1]}")
         
         # 基础评分
         base_score = self.fusion_layers(x).squeeze(-1)
@@ -727,13 +727,6 @@ class FusionGraphBertAES(nn.Module):
         
         return final_score, feature_weights, relevance_score, base_score
     
-    def _adapt_fusion_layer(self, actual_dim):
-        """动态调整融合层以适应实际输入维度"""
-        print(f"🛠️ Adapting fusion layer to input dimension: {actual_dim}")
-        old_layer = self.fusion_layers[0]
-        self.fusion_layers[0] = nn.Linear(actual_dim, old_layer.out_features).to(DEVICE)
-        self.fusion_input_dim = actual_dim
-
 model = FusionGraphBertAES().to(DEVICE)
 
 # ---------------------------
@@ -842,10 +835,10 @@ class EarlyStopping:
 # 混合精度训练 - 更新为新的API
 use_amp = DEVICE.type == "cuda" and torch.cuda.is_available()
 if use_amp:
-    scaler = torch.cuda.amp.GradScaler()
+    amp_scaler = torch.cuda.amp.GradScaler()
     print("Using mixed precision training")
 else:
-    scaler = None
+    amp_scaler = None
     print("Mixed precision not available, using standard training")
 
 early_stopping = EarlyStopping(patience=PATIENCE, verbose=True, path="fusion_graphbert_best.pth")
@@ -946,11 +939,11 @@ for epoch in range(1, EPOCHS + 1):
                 loss, reg_loss, sparse_loss, relevance_loss = criterion(preds, target, feature_weights, relevance_scores)
                 loss = loss / ACCUM_STEPS
 
-            scaler.scale(loss).backward()
+            amp_scaler.scale(loss).backward()
 
             if (step + 1) % ACCUM_STEPS == 0:
-                scaler.step(optimizer)
-                scaler.update()
+                amp_scaler.step(optimizer)
+                amp_scaler.update()
                 optimizer.zero_grad()
         else:
             # 不使用混合精度
@@ -1243,7 +1236,7 @@ except Exception as e:
 # 3. 保存目标缩放器
 try:
     with open(target_scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
+        pickle.dump(target_scaler, f)
     print(f"✓ Target scaler saved at: {target_scaler_path}")
 except Exception as e:
     print(f"✗ Failed to save target scaler: {e}")
@@ -1251,6 +1244,8 @@ except Exception as e:
 # 4. 保存模型配置
 model_config = {
     "model_name": MODEL_NAME,
+    "vocab_size": len(tokenizer),
+    "fusion_input_dim": model.fusion_input_dim,
     "max_length": MAX_LENGTH,
     "graph_in_dim": GRAPH_IN_DIM,
     "graph_hidden": GRAPH_HIDDEN,
@@ -1259,8 +1254,8 @@ model_config = {
     "dropout": DROPOUT,
     "freeze_bert_layers": FREEZE_BERT_LAYERS,
     "prompt_relevance_weight": PROMPT_RELEVANCE_WEIGHT,
-    "score_min": float(df['score'].min()),
-    "score_max": float(df['score'].max()),
+    "score_min": float(target_scaler.data_min_[0]),
+    "score_max": float(target_scaler.data_max_[0]),
     "feature_names": [
         "char_count", "word_count", "comma_count", "unique_words", 
         "proper_nouns", "determiners", "nouns", "adverbs", 
@@ -1309,7 +1304,7 @@ try:
         'model_state_dict': model.state_dict(),
         'model_config': model_config,
         'feature_scaler': feature_scaler,
-        'target_scaler': scaler
+        'target_scaler': target_scaler
     }, full_model_path)
     print(f"✓ Full model package saved at: {full_model_path}")
 except Exception as e:
