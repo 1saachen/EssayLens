@@ -18,30 +18,34 @@ import json
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import pickle
 
+if __package__:
+    from .model_config import read_model_config
+else:
+    from model_config import read_model_config
+
 # ---------------------------
 # ---- 从配置文件读取配置 ----
 # ---------------------------
 def load_config(config_path="model_config.json"):
     """从配置文件加载所有配置"""
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    config = read_model_config(config_path)
     
     # 设置全局变量
     global MODEL_NAME, MAX_LENGTH, GRAPH_IN_DIM, GRAPH_HIDDEN, GRAPH_OUT
     global NUM_FEATURES, PROMPT_RELEVANCE_WEIGHT, DROPOUT, FREEZE_BERT_LAYERS
     global MIN_SCORE, MAX_SCORE
     
-    MODEL_NAME = config.get("MODEL_NAME", "roberta-base")
-    MAX_LENGTH = config.get("MAX_LENGTH", 256)
-    GRAPH_IN_DIM = config.get("GRAPH_IN_DIM", 2)
-    GRAPH_HIDDEN = config.get("GRAPH_HIDDEN", 64)
-    GRAPH_OUT = config.get("GRAPH_OUT", 256)
-    NUM_FEATURES = config.get("NUM_FEATURES", 20)
-    PROMPT_RELEVANCE_WEIGHT = config.get("PROMPT_RELEVANCE_WEIGHT", 0.15)
-    DROPOUT = config.get("DROPOUT", 0.3)
-    FREEZE_BERT_LAYERS = config.get("FREEZE_BERT_LAYERS", 6)
-    MIN_SCORE = config.get("min_score", 1.0)
-    MAX_SCORE = config.get("max_score", 5.0)
+    MODEL_NAME = config.get("model_name", "roberta-base")
+    MAX_LENGTH = config.get("max_length", 256)
+    GRAPH_IN_DIM = config.get("graph_in_dim", 2)
+    GRAPH_HIDDEN = config.get("graph_hidden", 64)
+    GRAPH_OUT = config.get("graph_out", 256)
+    NUM_FEATURES = config.get("num_features", 20)
+    PROMPT_RELEVANCE_WEIGHT = config.get("prompt_relevance_weight", 0.15)
+    DROPOUT = config.get("dropout", 0.3)
+    FREEZE_BERT_LAYERS = config.get("freeze_bert_layers", 6)
+    MIN_SCORE = config.get("score_min", 1.0)
+    MAX_SCORE = config.get("score_max", 5.0)
     
     return config
 
@@ -474,7 +478,7 @@ class EssayScorer:
         print(f"Using device: {self.device}")
         
         # 首先加载配置
-        self.model_config = self._load_model_config(config_path)
+        self.model_config = self._load_model_config(config_path, tokenizer_path)
         
         # 然后加载组件（使用配置中的参数）
         self._load_components(tokenizer_path)
@@ -483,35 +487,32 @@ class EssayScorer:
         
         print("✓ Essay Scorer initialized successfully")
     
-    def _load_model_config(self, config_path):
+    def _load_model_config(self, config_path, tokenizer_path="./tokenizer"):
         """加载模型配置"""
         if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
+            config = load_config(config_path)
             print(f"✓ Model config loaded from {config_path}")
             
             # 确保配置中有必要的字段
             if "vocab_size" not in config:
                 # 从tokenizer目录推断词汇表大小
-                tokenizer_path = "./tokenizer"
                 if os.path.exists(tokenizer_path):
                     try:
                         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
                         config["vocab_size"] = len(tokenizer)
                         print(f"📚 从tokenizer推断词汇表大小: {config['vocab_size']}")
                     except:
-                        config["vocab_size"] = 50265  # 默认值
-                        print(f"⚠ 使用默认词汇表大小: {config['vocab_size']}")
+                        pass  # _load_model uses the actual loaded tokenizer length.
             
             if "fusion_input_dim" not in config:
                 # 计算融合输入维度
-                model_name = config.get("MODEL_NAME", "roberta-base")
+                model_name = config.get("model_name", "roberta-base")
                 try:
                     bert_config = AutoConfig.from_pretrained(model_name)
                     bert_hidden = bert_config.hidden_size
                     # 图编码器输出维度是 GRAPH_OUT // 2
-                    graph_out = config.get("GRAPH_OUT", 256) // 2
-                    num_features = config.get("NUM_FEATURES", 20)
+                    graph_out = config.get("graph_out", 256) // 2
+                    num_features = config.get("num_features", 20)
                     config["fusion_input_dim"] = bert_hidden + graph_out + num_features
                     print(f"🔧 计算融合输入维度: {config['fusion_input_dim']}")
                 except:
@@ -594,7 +595,7 @@ class EssayScorer:
         print("Loading trained model...")
         
         # 使用配置中的参数创建模型
-        model_name = self.model_config.get("MODEL_NAME", "roberta-base")
+        model_name = self.model_config.get("model_name", "roberta-base")
         vocab_size = self.model_config.get("vocab_size", len(self.tokenizer))
         fusion_input_dim = self.model_config.get("fusion_input_dim")
         
@@ -602,10 +603,10 @@ class EssayScorer:
         
         self.model = FusionGraphBertAES(
             model_name=model_name,
-            graph_out=self.model_config.get("GRAPH_OUT", 256),
-            num_features=self.model_config.get("NUM_FEATURES", 20),
-            dropout=self.model_config.get("DROPOUT", 0.3),
-            prompt_relevance_weight=self.model_config.get("PROMPT_RELEVANCE_WEIGHT", 0.15),
+            graph_out=self.model_config.get("graph_out", 256),
+            num_features=self.model_config.get("num_features", 20),
+            dropout=self.model_config.get("dropout", 0.3),
+            prompt_relevance_weight=self.model_config.get("prompt_relevance_weight", 0.15),
             vocab_size=vocab_size,
             fusion_input_dim=fusion_input_dim
         ).to(self.device)
@@ -619,13 +620,7 @@ class EssayScorer:
                 print(f"✓ Model loaded from {model_path}")
             except Exception as e:
                 print(f"❌ Error loading model: {e}")
-                # 尝试非严格加载
-                try:
-                    self.model.load_state_dict(state_dict, strict=False)
-                    print("✓ Model loaded with strict=False")
-                except Exception as e2:
-                    print(f"❌ Failed to load model even with strict=False: {e2}")
-                    raise
+                raise
         else:
             print(f"❌ Model file {model_path} not found.")
             raise FileNotFoundError(f"Model file {model_path} not found")
@@ -688,14 +683,14 @@ class EssayScorer:
                 return float(denormalized)
             else:
                 # 默认使用MinMax归一化
-                min_score = self.model_config.get("min_score", 1.0)
-                max_score = self.model_config.get("max_score", 5.0)
+                min_score = self.model_config.get("score_min", 1.0)
+                max_score = self.model_config.get("score_max", 5.0)
                 denormalized = normalized_score * (max_score - min_score) + min_score
                 return float(denormalized)
         except Exception as e:
             print(f"⚠ 反归一化失败: {e}，使用默认方法")
-            min_score = self.model_config.get("min_score", 1.0)
-            max_score = self.model_config.get("max_score", 5.0)
+            min_score = self.model_config.get("score_min", 1.0)
+            max_score = self.model_config.get("score_max", 5.0)
             denormalized = normalized_score * (max_score - min_score) + min_score
             return float(denormalized)
     

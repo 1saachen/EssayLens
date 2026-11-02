@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.DS_Store
+.idea/
+*.pth
+*.pkl
+model_config.json
+tokenizer/
+graphs_cache/
+features_cache/
+prompt_cache/
+ASAP2_train_sourcetexts.csv
